@@ -41,7 +41,7 @@ fi
 MODEL_ARG=(); [ -n "${PTK_MODEL:-}" ] && MODEL_ARG=(--model "$PTK_MODEL")
 META_ARG=(); [ -n "$META" ] && [ -f "$META" ] && META_ARG=(--meta "$META")
 
-TR=("$SCRIPTS/transcribe.py" "$AUDIO" --outdir "$OUTDIR" --engine "$ENGINE" "${MODEL_ARG[@]}" "${META_ARG[@]}")
+TR=("$SCRIPTS/transcribe.py" "$AUDIO" --outdir "$OUTDIR" --engine "$ENGINE" ${MODEL_ARG[@]+"${MODEL_ARG[@]}"} ${META_ARG[@]+"${META_ARG[@]}"})
 
 echo "==> [2/3] 转写 (引擎=$ENGINE, 首次会下载模型, 请耐心)"
 py_has() { python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('$1') else 1)" 2>/dev/null; }
