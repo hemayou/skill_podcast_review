@@ -138,7 +138,7 @@ def run_funasr(audio, model, language, initial_prompt):
     segs = []
     for si in res.get("sentence_info") or []:
         t = (si.get("text") or "").strip()
-        if t:
+        if t.strip(" ，。、？！,.?!"):  # 跳过只有标点的碎段
             segs.append({"start": si["start"] / 1000.0, "end": si["end"] / 1000.0, "text": t})
     text = res.get("text", "")
     if not segs and text:  # 兜底: 没有句级时间戳时整段输出

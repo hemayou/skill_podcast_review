@@ -116,7 +116,7 @@ def main():
     if meta.get("source_url"):
         line += f"｜{meta['source_url']}"
     out.append(line if line.strip() != ">" else "")
-    out.append("> 由本地 Whisper 自动转写并按时间轴整合, 已折叠重复、补轻标点、套用校订表。"
+    out.append("> 由本地语音识别(FunASR/Whisper)自动转写并按时间轴整合, 已折叠重复、补轻标点、套用校订表。"
                "机器转写难免同音/专名误差, 引用前请对照音频。\n")
 
     cur = -1
