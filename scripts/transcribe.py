@@ -10,7 +10,8 @@ run_pipeline.sh(优先用 uv 临时环境, 不污染全局), 见 references/tran
     faster     faster-whisper   —— 跨平台(CPU/GPU), 默认 large-v3
     openai     openai-whisper   —— 兜底, 默认 turbo
     funasr     FunASR(阿里)     —— 中文首选: paraformer-zh + fsmn-vad + ct-punc,
-                                   错字少、自带标点和句级时间戳; 需 16k 单声道 wav
+                                   错字少; 无标点逐字结果 + 整段 ct-punc + 字符对齐回时间戳;
+                                   需 16k 单声道 wav
                                    (run_pipeline.sh 会先转码, 并用 ~/funasr/.venv 跑)
 
 auto 规则: --language 为 zh 且能 import funasr → funasr; 否则按 mlx/faster/openai 探测。
@@ -125,25 +126,90 @@ def run_openai(audio, model, language, initial_prompt):
     return r.get("language", language), r["segments"], r.get("text", "")
 
 
+PUNC_MAP = {",": "，", ".": "。", "?": "？", "!": "！"}
+END_PUNC = "。？！"
+
+
+def _is_ascii_word(t):
+    return bool(t) and t[0].isascii() and t[0].isalnum()
+
+
+def align_punc(tokens, punc_text):
+    """把整段标点结果按字符对齐回 ASR token, 返回每个 token 之后的标点(可为空)。"""
+    after = [""] * len(tokens)
+    i, n = 0, len(punc_text)
+    for j, tok in enumerate(tokens):
+        for ch in tok.casefold():
+            while i < n and (punc_text[i].isspace() or punc_text[i] in "，。？！、,.?!"
+                             ) and punc_text[i].casefold() != ch:
+                i += 1
+            if i < n and punc_text[i].casefold() == ch:
+                i += 1
+            # 对不上就跳过该字符, 不让误差向后漂移
+        k = i
+        while k < n and (punc_text[k].isspace() or punc_text[k] in "，。？！、,.?!"):
+            if not punc_text[k].isspace():
+                after[j] += punc_text[k]
+            k += 1
+        i = k
+    return after
+
+
+def build_sentences(tokens, stamps, after, maxlen=60):
+    segs, buf, start = [], "", None
+    def emit(end):
+        nonlocal buf, start
+        t = buf.strip()
+        if t.strip("，。？！、 "):
+            segs.append({"start": start / 1000.0, "end": end / 1000.0, "text": t})
+        buf, start = "", None
+    prev = None
+    for tok, (st, en), pu in zip(tokens, stamps, after):
+        if start is None:
+            start = st
+        if (prev is not None and buf and buf[-1] not in "，。？！、"
+                and (_is_ascii_word(prev) or _is_ascii_word(tok))):
+            buf += " "  # 英文词之间、中英交界处留空格
+        buf += tok
+        pu = "".join(PUNC_MAP.get(c, c) for c in pu)[:1]
+        buf += pu
+        prev = tok
+        if pu and (pu in END_PUNC or (pu == "，" and len(buf) >= maxlen)):
+            emit(en)
+            prev = None
+    if buf:
+        emit(stamps[-1][1])
+    # 修掉中英之间多余的空格紧挨标点
+    for sg in segs:
+        sg["text"] = re.sub(r" ([，。？！、])", r"\1", sg["text"])
+    return segs
+
+
 def run_funasr(audio, model, language, initial_prompt):
+    """FunASR: 先出无标点逐字结果+时间戳, 再把整段文本一次性过 ct-punc, 最后按字符对齐回时间戳。
+
+    不用 generate(punc_model=..., sentence_timestamp=True): funasr 1.4.x 内部把标点数组
+    映射回 token 时, 遇到英文词(two/shall/AI/人名)会错位, 之后的标点整体前后漂移,
+    出现"话，题""教，育"这类把词从中间断开的情况。
+    """
     from funasr import AutoModel
     model = model or "paraformer-zh"
-    print(f"[transcribe] 引擎=funasr 模型={model}+fsmn-vad+ct-punc", file=sys.stderr)
-    m = AutoModel(model=model, vad_model="fsmn-vad", punc_model="ct-punc",
-                  disable_update=True)
-    # 注: paraformer-zh 不吃 initial_prompt; 专名纠错交给阶段 2 的 fixes.json
-    r = m.generate(input=os.path.abspath(audio), batch_size_s=300,
-                   sentence_timestamp=True)
+    punc_name = os.environ.get("PTK_FUNASR_PUNC", "ct-punc")
+    print(f"[transcribe] 引擎=funasr 模型={model}+fsmn-vad, 标点={punc_name}(整段)", file=sys.stderr)
+    asr = AutoModel(model=model, vad_model="fsmn-vad", disable_update=True)
+    r = asr.generate(input=os.path.abspath(audio), batch_size_s=300)
     res = r[0] if r else {}
-    segs = []
-    for si in res.get("sentence_info") or []:
-        t = (si.get("text") or "").strip()
-        if t.strip(" ，。、？！,.?!"):  # 跳过只有标点的碎段
-            segs.append({"start": si["start"] / 1000.0, "end": si["end"] / 1000.0, "text": t})
-    text = res.get("text", "")
-    if not segs and text:  # 兜底: 没有句级时间戳时整段输出
-        segs = [{"start": 0.0, "end": 0.0, "text": text}]
-    return language or "zh", segs, text
+    tokens = (res.get("text") or "").split()
+    stamps = res.get("timestamp") or []
+    if not tokens:
+        return language or "zh", [], ""
+    punc = AutoModel(model=punc_name, disable_update=True)
+    punc_text = punc.generate(input=" ".join(tokens))[0]["text"]
+    if len(stamps) != len(tokens):  # 极少见: 没有逐字时间戳, 整段输出
+        return language or "zh", [{"start": 0.0, "end": 0.0, "text": punc_text}], punc_text
+    after = align_punc(tokens, punc_text)
+    segs = build_sentences(tokens, stamps, after)
+    return language or "zh", segs, "".join(s["text"] for s in segs)
 
 
 def main():

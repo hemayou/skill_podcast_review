@@ -22,6 +22,12 @@
    `transcribe.py --engine funasr`。产出与其它引擎一致的 `audio.json/srt/txt`（句级时间戳来自 `sentence_timestamp=True`）。
    以下 1–3 仅适用于 Whisper 系引擎。
 
+   **FunASR 标点做法（重要）**：不用 `generate(punc_model=..., sentence_timestamp=True)`。funasr 1.4.x 内部把
+   标点数组映射回 token 时，遇到英文词（AI、two、人名等）会错位，之后的标点整体漂移，出现"话，题""教，育"这类
+   把词从中间断开的问题。`transcribe.py` 改为：① paraformer-zh + fsmn-vad 出无标点逐字结果和逐字时间戳；
+   ② 整段文本一次性过 ct-punc（可用 `PTK_FUNASR_PUNC` 换模型）；③ 按字符把标点对齐回 token，在句末标点处切句
+   （过长时在逗号处切），得到句级时间戳。
+
 1. 若目标引擎已能 import → 直接用当前 Python。
 2. 否则若有 **uv** → `uv run --with <pkg> python transcribe.py …`（临时环境，**不污染全局，推荐**）。
 3. 否则尝试 `pip install --user <pkg>` / `pip install <pkg>`，失败则给出手动指引。

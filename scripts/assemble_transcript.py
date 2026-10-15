@@ -97,7 +97,10 @@ def main():
     # 清洗 + 折叠连续重复
     rows, prev = [], None
     for sg in segs:
-        t = apply_fixes(sg["text"].strip(), fixes).strip(" ，。、,.")
+        t = apply_fixes(sg["text"].strip(), fixes).strip(" ，、,")
+        t = t.lstrip("。.？！?!")
+        if not t.strip("。.？！?! "):
+            continue
         if not t or t == prev:
             continue
         prev = t
@@ -122,10 +125,20 @@ def main():
     cur = -1
     buf, buf_end = [], None
 
+    def join(parts):
+        # 已带句末标点(FunASR 整段标点)的直接拼, 否则补逗号(Whisper 片段)
+        res = ""
+        for p in parts:
+            if res and res[-1] not in "。？！.?!":
+                res += "，"
+            res += p
+        return res
+
     def flush():
         nonlocal buf, buf_end
         if buf:
-            out.append("，".join(buf) + "。")
+            j = join(buf)
+            out.append(j if j[-1] in "。？！.?!" else j + "。")
             out.append("")
         buf, buf_end = [], None
 
@@ -136,7 +149,7 @@ def main():
             cst, ctitle = chapters[ci]
             out.append(f"## [{mmss(cst)}] {ctitle}\n")
         if buf and (buf_end is not None and st - buf_end > args.pause
-                    or len("，".join(buf)) > args.maxlen):
+                    or len(join(buf)) > args.maxlen):
             flush()
         buf.append(t); buf_end = en
     flush()
