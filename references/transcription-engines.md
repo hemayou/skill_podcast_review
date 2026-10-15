@@ -7,6 +7,7 @@
 
 | 引擎 | 适用 | 默认模型 | 备注 |
 |---|---|---|---|
+| **FunASR** | 中文节目（任意平台，CPU 即可） | `paraformer-zh` + `fsmn-vad` + `ct-punc` | **中文首选**：错字少、少幻觉、自带标点和句级时间戳；英文/中英大量混杂仍用 Whisper |
 | **mlx-whisper** | Apple 芯片 Mac（arm64） | `mlx-community/whisper-large-v3-turbo` | 跑 Metal，最快，中文质量好。**首选** |
 | **faster-whisper** | Windows / Linux / Intel Mac（CPU 或 NVIDIA GPU） | `large-v3` | 跨平台稳；有 GPU 更快 |
 | **openai-whisper** | 兜底，任意平台 | `turbo` | 纯 PyTorch，最通用但偏慢 |
@@ -16,11 +17,17 @@
 
 ## 运行方式（`run_pipeline.sh` 的自动策略）
 
+0. **FunASR**：未设 `PTK_ENGINE`、`PTK_LANGUAGE` 为 zh（默认）、且 `$PTK_FUNASR_PY`（默认 `~/funasr/.venv/bin/python`）
+   能 import funasr → 先 `ffmpeg -ar 16000 -ac 1` 转成 `audio.16k.wav`（用完删除），再用该 Python 跑
+   `transcribe.py --engine funasr`。产出与其它引擎一致的 `audio.json/srt/txt`（句级时间戳来自 `sentence_timestamp=True`）。
+   以下 1–3 仅适用于 Whisper 系引擎。
+
 1. 若目标引擎已能 import → 直接用当前 Python。
 2. 否则若有 **uv** → `uv run --with <pkg> python transcribe.py …`（临时环境，**不污染全局，推荐**）。
 3. 否则尝试 `pip install --user <pkg>` / `pip install <pkg>`，失败则给出手动指引。
 
-环境变量覆盖：`PTK_ENGINE=mlx|faster|openai`、`PTK_MODEL=<模型名>`。
+环境变量覆盖：`PTK_ENGINE=funasr|mlx|faster|openai`、`PTK_MODEL=<模型名>`、`PTK_LANGUAGE=zh|en|…`、
+`PTK_FUNASR_PY=<FunASR 环境的 python>`。英文节目务必 `PTK_LANGUAGE=en`。
 
 ## 手动安装（按需）
 
@@ -32,6 +39,22 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 python3 -m pip install mlx-whisper        # Apple 芯片 Mac
 python3 -m pip install faster-whisper     # 跨平台
 python3 -m pip install -U openai-whisper  # 兜底（还需要 ffmpeg）
+```
+
+## 安装 FunASR（中文首选）
+
+```bash
+mkdir -p ~/funasr && cd ~/funasr
+python3.11 -m venv .venv
+.venv/bin/pip install -U funasr modelscope torch torchaudio
+brew install ffmpeg   # 转 wav 用
+```
+
+首次运行会从 ModelScope 下载 paraformer-zh / fsmn-vad / ct-punc 并缓存。手动单跑：
+
+```bash
+ffmpeg -i in.m4a -ar 16000 -ac 1 /abs/path/audio.wav
+~/funasr/.venv/bin/python "<SKILL_DIR>/scripts/transcribe.py" /abs/path/audio.wav --outdir "<输出目录>" --engine funasr
 ```
 
 ## 已验证可用的一行命令（Apple 芯片 Mac）

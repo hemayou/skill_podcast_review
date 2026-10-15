@@ -44,8 +44,10 @@ description: |
 bash "$SKILL_DIR/scripts/run_pipeline.sh" "<小宇宙链接或音频文件>" ["输出目录"]
 ```
 
-它会自动：判断输入类型 → 抓音频和 shownotes → 按系统选 Whisper 引擎（Apple 芯片 Mac 用 mlx-whisper
-的 large-v3-turbo；其他系统用 faster-whisper）→ 优先用 `uv` 临时环境运行（不污染全局），没有 uv 再退化到
+它会自动：判断输入类型 → 抓音频和 shownotes → 选转写引擎：**中文节目（默认 `PTK_LANGUAGE=zh`）且装了 FunASR
+（`~/funasr/.venv`）时用 FunASR**（paraformer-zh + fsmn-vad + ct-punc，先用 ffmpeg 转 16k 单声道 wav，
+错字明显少于 Whisper、自带标点和句级时间戳）；**英文节目请设 `PTK_LANGUAGE=en`**，走 Whisper（Apple 芯片 Mac 用
+mlx-whisper 的 large-v3-turbo；其他系统用 faster-whisper）→ Whisper 路径 优先用 `uv` 临时环境运行（不污染全局），没有 uv 再退化到
 系统 Python / pip → 整合出 `文字稿.md`。**首次运行会下载模型（约 1.5GB），耐心等。**
 
 产出：`audio.*`（音频+srt/vtt/txt/json）、`shownotes.md`、`文字稿.md`。
@@ -53,7 +55,10 @@ bash "$SKILL_DIR/scripts/run_pipeline.sh" "<小宇宙链接或音频文件>" ["�
 > 若某一步在某个工具/环境里报错，可分步单独跑（见各脚本头部说明），或查 `references/transcription-engines.md`
 > 的手动安装与排错（含已验证可用的 `uv run --with mlx-whisper …` 一行命令）。
 
-转写时脚本已用 shownotes 抽出的专名词表做 `initial-prompt` 从源头纠偏——但**这不能完全消除同音/专名错**，
+英文节目示例：`PTK_LANGUAGE=en bash "$SKILL_DIR/scripts/run_pipeline.sh" "<音频>" "<输出目录>"`；
+强制指定引擎：`PTK_ENGINE=funasr|mlx|faster|openai`。
+
+Whisper 路径下脚本已用 shownotes 抽出的专名词表做 `initial-prompt` 从源头纠偏（FunASR 不支持该参数，英文人名常被拼错，如 Robert Hall→"robt haall"）——但**这不能完全消除同音/专名错**，
 真正的校订在下一步。
 
 ---

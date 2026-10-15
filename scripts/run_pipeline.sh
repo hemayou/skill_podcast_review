@@ -8,7 +8,9 @@
 # 环境自适应:
 #   - 引擎: Apple 芯片 Mac → mlx-whisper(large-v3-turbo); 其他 → faster-whisper(large-v3)
 #   - 运行方式: 有 uv → 用临时环境(不污染全局, 推荐); 否则用系统 Python(必要时 pip 安装)
-#   - 可用环境变量覆盖: PTK_ENGINE(mlx|faster|openai) PTK_MODEL=<模型名>
+#   - 中文(PTK_LANGUAGE=zh, 默认)且存在 FunASR 环境 → funasr(先用 ffmpeg 转 16k 单声道 wav)
+#   - 可用环境变量覆盖: PTK_ENGINE(funasr|mlx|faster|openai) PTK_MODEL=<模型名>
+#     PTK_LANGUAGE=zh|en|... PTK_FUNASR_PY=<FunASR 的 python, 默认 ~/funasr/.venv/bin/python>
 set -euo pipefail
 
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,17 +33,33 @@ fi
 [ -n "${AUDIO:-}" ] && [ -f "$AUDIO" ] || { echo "未拿到音频文件, 终止。"; exit 1; }
 
 # ---------- 2. 选引擎 + 转写 ----------
+LANGUAGE="${PTK_LANGUAGE:-zh}"
+FUNASR_PY="${PTK_FUNASR_PY:-$HOME/funasr/.venv/bin/python}"
 OS="$(uname -s)"; ARCH="$(uname -m)"
-if [ "$OS" = "Darwin" ] && [ "$ARCH" = "arm64" ]; then
-  ENGINE="${PTK_ENGINE:-mlx}";    PKG="mlx-whisper"
+if [ -z "${PTK_ENGINE:-}" ] && [[ "$LANGUAGE" == zh* ]] && [ -x "$FUNASR_PY" ] \
+   && "$FUNASR_PY" -c "import funasr" 2>/dev/null; then
+  ENGINE=funasr
+elif [ "$OS" = "Darwin" ] && [ "$ARCH" = "arm64" ]; then
+  ENGINE="${PTK_ENGINE:-mlx}"
 else
-  ENGINE="${PTK_ENGINE:-faster}"; PKG="faster-whisper"
+  ENGINE="${PTK_ENGINE:-faster}"
 fi
-[ "$ENGINE" = "openai" ] && PKG="openai-whisper"
+case "$ENGINE" in mlx) PKG="mlx-whisper";; openai) PKG="openai-whisper";; *) PKG="faster-whisper";; esac
 MODEL_ARG=(); [ -n "${PTK_MODEL:-}" ] && MODEL_ARG=(--model "$PTK_MODEL")
 META_ARG=(); [ -n "$META" ] && [ -f "$META" ] && META_ARG=(--meta "$META")
 
-TR=("$SCRIPTS/transcribe.py" "$AUDIO" --outdir "$OUTDIR" --engine "$ENGINE" ${MODEL_ARG[@]+"${MODEL_ARG[@]}"} ${META_ARG[@]+"${META_ARG[@]}"})
+if [ "$ENGINE" = funasr ]; then
+  [ -x "$FUNASR_PY" ] || { echo "选了 funasr 但找不到 $FUNASR_PY (见 references/transcription-engines.md)"; exit 2; }
+  command -v ffmpeg >/dev/null 2>&1 || { echo "funasr 需要 ffmpeg 先转 wav: brew install ffmpeg"; exit 2; }
+  WAV="$OUTDIR/audio.16k.wav"
+  echo "==> [2/3] 转 16k 单声道 wav → $WAV"
+  ffmpeg -nostdin -loglevel error -y -i "$AUDIO" -ar 16000 -ac 1 -c:a pcm_s16le "$WAV"
+  echo "==> [2/3] 转写 (引擎=funasr, python=$FUNASR_PY)"
+  "$FUNASR_PY" "$SCRIPTS/transcribe.py" "$WAV" --outdir "$OUTDIR" --engine funasr \
+    --language "$LANGUAGE" ${MODEL_ARG[@]+"${MODEL_ARG[@]}"} ${META_ARG[@]+"${META_ARG[@]}"}
+  rm -f "$WAV"
+else
+TR=("$SCRIPTS/transcribe.py" "$AUDIO" --outdir "$OUTDIR" --engine "$ENGINE" --language "$LANGUAGE" ${MODEL_ARG[@]+"${MODEL_ARG[@]}"} ${META_ARG[@]+"${META_ARG[@]}"})
 
 echo "==> [2/3] 转写 (引擎=$ENGINE, 首次会下载模型, 请耐心)"
 py_has() { python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('$1') else 1)" 2>/dev/null; }
@@ -61,6 +79,7 @@ else
     echo "  - 或:  python3 -m pip install $PKG"
     exit 2; }
   python3 "${TR[@]}"
+fi
 fi
 
 # ---------- 3. 整合成文字稿 ----------
